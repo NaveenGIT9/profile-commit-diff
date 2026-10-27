@@ -16,14 +16,6 @@ git diff +156 -149 lines  →  15 real changes (3 added, 12 changed)
 │ + Added   │ Field access │ OpportunityLineItem.Renewal_ACV__c          │          │        │ editable=false, readable=false │
 │ ...       │              │                                             │          │        │                                │
 └───────────┴──────────────┴─────────────────────────────────────────────┴──────────┴────────┴────────────────────────────────┘
-
-Summary
-┌─────────────────────────────────────────────────────┬────────────────┬──────────────┬───────┬─────────┬─────────┬────────────┐
-│ File                                                │ Git diff lines │ Real changes │ Added │ Removed │ Changed │ Duplicates │
-├─────────────────────────────────────────────────────┼────────────────┼──────────────┼───────┼─────────┼─────────┼────────────┤
-│ Copado Integration - Rubrik API Integration.profile │ +156 -149      │ 15           │ 3     │ 0       │ 12      │ 0          │
-│ Rubrik Backup API - Rubrik API Integration.profile  │ +13 -13        │ 11           │ 0     │ 0       │ 11      │ 0          │
-└─────────────────────────────────────────────────────┴────────────────┴──────────────┴───────┴─────────┴─────────┴────────────┘
 ```
 
 ## Usage
@@ -46,7 +38,7 @@ node profile-diff.js <commit> --repo <path to the Salesforce repo>
 
 ## Output
 
-One table per file, grouped by type, then a summary table.
+One table per file, grouped by type.
 
 | Change | Colour | Meaning |
 |---|---|---|

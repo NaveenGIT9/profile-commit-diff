@@ -221,7 +221,6 @@ const green = paint(32);
 const red = paint(31);
 const yellow = paint(33);
 const magenta = paint(35);
-const cyan = paint(36);
 const bold = paint(1);
 const dim = paint(2);
 
@@ -374,42 +373,6 @@ function printFile(file, stat, result) {
     console.log('');
 }
 
-function printSummary(summaries) {
-    const totals = { added: 0, removed: 0, changed: 0, real: 0 };
-    const rows = summaries.map(({ file, stat, result }) => {
-        const k = countKinds(result.changes);
-        const newOrDeleted = file.status === 'A' ? 'new file' : file.status === 'D' ? 'deleted' : null;
-        if (!newOrDeleted) {
-            totals.added += k.added;
-            totals.removed += k.removed;
-            totals.changed += k.changed;
-            totals.real += result.changes.length;
-        }
-        const dupes = result.duplicates.filter((d) => !d.fixed).length;
-        const num = (n, color) => (newOrDeleted ? '' : n ? color(String(n)) : dim('0'));
-        return {
-            group: 0,
-            cells: [
-                file.newPath.split('/').pop().replace(/-meta\.xml$/, ''),
-                `+${stat.added} -${stat.removed}`,
-                newOrDeleted || String(result.changes.length),
-                num(k.added, green),
-                num(k.removed, red),
-                num(k.changed, yellow),
-                dupes ? magenta(String(dupes)) : dim('0')
-            ],
-            colors: [null, dim, newOrDeleted ? cyan : result.changes.length ? bold : green]
-        };
-    });
-    console.log(bold('Summary'));
-    console.log(
-        renderTable(
-            [{ title: 'File', max: 70 }, { title: 'Git diff lines' }, { title: 'Real changes' }, { title: 'Added' }, { title: 'Removed' }, { title: 'Changed' }, { title: 'Duplicates' }],
-            rows
-        )
-    );
-    console.log(bold(`${plural(summaries.length, 'file')} checked, ${plural(totals.real, 'real change')}.`));
-}
 
 function main(argv) {
     const args = { repo: process.cwd() };
@@ -443,16 +406,15 @@ function main(argv) {
         return 0;
     }
 
-    const summaries = [];
+    let total = 0;
     for (const file of files) {
         const before = file.status === 'A' ? null : git(args.repo, ['show', `${parent}:${file.oldPath}`]);
         const after = file.status === 'D' ? null : git(args.repo, ['show', `${commit}:${file.newPath}`]);
         const result = compareXml(before, after);
-        const stat = lineStat(args.repo, parent, commit, file);
-        printFile(file, stat, result);
-        summaries.push({ file, stat, result });
+        if (file.status !== 'A' && file.status !== 'D') total += result.changes.length;
+        printFile(file, lineStat(args.repo, parent, commit, file), result);
     }
-    printSummary(summaries);
+    console.log(bold(`${plural(files.length, 'file')} checked, ${plural(total, 'real change')}.`));
     return 0;
 }
 
