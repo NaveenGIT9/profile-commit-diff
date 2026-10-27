@@ -215,7 +215,10 @@ function lineStat(repo, parent, commit, file) {
 
 // ---------- output ----------
 
-const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+let slackMode = false;
+let useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const output = [];
+const say = (line = '') => output.push(line);
 const paint = (code) => (text) => (useColor ? `\x1b[${code}m${text}\x1b[0m` : text);
 const green = paint(32);
 const red = paint(31);
@@ -282,34 +285,44 @@ function wrap(text, width) {
 // columns: [{ title, max }]; rows: [{ cells: [text], colors: [fn], group }] -- a line is drawn where group changes.
 function renderTable(columns, rows) {
     const longest = (text) => Math.max(...String(text).split('\n').map((l) => l.length));
-    const widths = columns.map((c, i) => Math.min(c.max || Infinity, Math.max(c.title.length, ...rows.map((r) => longest(r.cells[i] ?? '')))));
-    const limit = (process.stdout.columns || 200) - 1;
+    const widths = columns.map((c, i) => Math.min(c.wraps ? c.max || Infinity : Infinity, Math.max(c.title.length, ...rows.map((r) => longest(r.cells[i] ?? '')))));
+    // Slack wraps code blocks at roughly 120 characters on a normal-width window.
+    const limit = slackMode ? 120 : (process.stdout.columns || 200) - 1;
     const border = 3 * columns.length + 1;
-    while (widths.reduce((a, b) => a + b, 0) + border > limit) {
-        const i = widths.indexOf(Math.max(...widths));
-        if (widths[i] <= 12) break;
+    // Only columns holding sentences (Before/After) are narrowed; names like Account.Field__c can't wrap cleanly.
+    const shrinkable = columns.map((c, i) => (c.wraps ? i : -1)).filter((i) => i >= 0);
+    while (shrinkable.length && widths.reduce((a, b) => a + b, 0) + border > limit) {
+        const i = shrinkable.reduce((best, j) => (widths[j] > widths[best] ? j : best), shrinkable[0]);
+        if (widths[i] <= 14) break;
         widths[i]--;
     }
 
-    const rule = (left, mid, right) => dim(left + widths.map((w) => '─'.repeat(w + 2)).join(mid) + right);
-    const out = [rule('┌', '┬', '┐')];
+    // Slack's code font draws box-drawing characters at uneven widths, so use plain ASCII there.
+    const box = slackMode
+        ? { h: '-', v: '|', top: ['+', '+', '+'], mid: ['+', '+', '+'], bottom: ['+', '+', '+'] }
+        : { h: '─', v: '│', top: ['┌', '┬', '┐'], mid: ['├', '┼', '┤'], bottom: ['└', '┴', '┘'] };
+    const rule = ([left, mid, right]) => dim(left + widths.map((w) => box.h.repeat(w + 2)).join(mid) + right);
+    const out = [rule(box.top)];
     const addRow = (cells, colors = []) => {
-        const wrapped = cells.map((c, i) => wrap(c ?? '', widths[i]));
+        const wrapped = cells.map((c, i) => wrap(c ?? '', columns[i].wraps ? widths[i] : Infinity));
         const height = Math.max(...wrapped.map((w) => w.length));
         for (let k = 0; k < height; k++) {
             const parts = wrapped.map((w, i) => ' ' + (colors[i] || String)((w[k] || '').padEnd(widths[i])) + ' ');
-            out.push(dim('│') + parts.join(dim('│')) + dim('│'));
+            out.push(dim(box.v) + parts.join(dim(box.v)) + dim(box.v));
         }
     };
     addRow(columns.map((c) => c.title), columns.map(() => bold));
-    out.push(rule('├', '┼', '┤'));
+    out.push(rule(box.mid));
     rows.forEach((r, i) => {
-        if (i > 0 && r.group !== rows[i - 1].group) out.push(rule('├', '┼', '┤'));
+        if (i > 0 && r.group !== rows[i - 1].group) out.push(rule(box.mid));
         addRow(r.cells, r.colors);
     });
-    out.push(rule('└', '┴', '┘'));
-    return out.join('\n');
+    out.push(rule(box.bottom));
+    // In Slack only a code block keeps a fixed-width font, so the columns stay aligned.
+    return slackMode ? '```\n' + out.join('\n') + '\n```' : out.join('\n');
 }
+
+const heading = (text) => (slackMode ? `*${text}*` : bold(text));
 
 function changeRows(changes) {
     const rows = [];
@@ -333,10 +346,10 @@ function changeRows(changes) {
 const CHANGE_COLUMNS = [
     { title: 'Change' },
     { title: 'Type' },
-    { title: 'Component', max: 60 },
-    { title: 'Setting', max: 20 },
-    { title: 'Before', max: 40 },
-    { title: 'After', max: 40 }
+    { title: 'Component' },
+    { title: 'Setting' },
+    { title: 'Before', wraps: true, max: 40 },
+    { title: 'After', wraps: true, max: 40 }
 ];
 
 function countKinds(changes) {
@@ -346,31 +359,51 @@ function countKinds(changes) {
 }
 
 function printFile(file, stat, result) {
-    console.log(bold(file.newPath) + (file.status === 'R' ? dim(`  (renamed from ${file.oldPath})`) : ''));
+    say(heading(file.newPath) + (file.status === 'R' ? dim(`  (renamed from ${file.oldPath})`) : ''));
     const statText = dim(`git diff +${stat.added} -${stat.removed} lines`);
-    if (file.status === 'A') console.log(`${statText}  →  ${green('new file')} with ${result.afterCount} blocks`);
-    else if (file.status === 'D') console.log(`${statText}  →  ${red('file deleted')} (${result.beforeCount} blocks)`);
-    else if (!result.changes.length) console.log(`${statText}  →  ${green('no real changes (only re-ordered)')}`);
+    if (file.status === 'A') say(`${statText}  ->  ${green('new file')} with ${result.afterCount} blocks`);
+    else if (file.status === 'D') say(`${statText}  ->  ${red('file deleted')} (${result.beforeCount} blocks)`);
+    else if (!result.changes.length) say(`${statText}  ->  ${green('no real changes (only re-ordered)')}`);
     else {
         const k = countKinds(result.changes);
         const parts = [k.added && green(`${k.added} added`), k.removed && red(`${k.removed} removed`), k.changed && yellow(`${k.changed} changed`)].filter(Boolean);
-        console.log(`${statText}  →  ${bold(plural(result.changes.length, 'real change'))} (${parts.join(', ')})`);
-        console.log(renderTable(CHANGE_COLUMNS, changeRows(result.changes)));
+        say(`${statText}  ->  ${bold(plural(result.changes.length, 'real change'))} (${parts.join(', ')})`);
+        say(renderTable(CHANGE_COLUMNS, changeRows(result.changes)));
     }
 
     const duplicates = result.duplicates.filter((d) => !d.fixed);
     const fixed = result.duplicates.filter((d) => d.fixed);
     if (duplicates.length) {
-        console.log(magenta(`! ${plural(duplicates.length, 'duplicate block')} in this file (same component listed more than once)`));
+        say(magenta(`! ${plural(duplicates.length, 'duplicate block')} in this file (same component listed more than once)`));
         const rows = duplicates.map((d) => ({
             group: 0,
             cells: [label(d.block.type), component(d.block), String(d.count), d.identical ? 'identical' : 'DIFFERENT values', d.existedBefore ? 'before this commit' : 'this commit'],
             colors: [null, null, null, d.identical ? null : magenta, d.existedBefore ? dim : magenta]
         }));
-        console.log(renderTable([{ title: 'Type' }, { title: 'Component', max: 60 }, { title: 'Copies' }, { title: 'Values' }, { title: 'Introduced in' }], rows));
+        say(renderTable([{ title: 'Type' }, { title: 'Component' }, { title: 'Copies' }, { title: 'Values' }, { title: 'Introduced in' }], rows));
     }
-    for (const d of fixed) console.log(dim(`Duplicate removed: ${label(d.block.type)} ${component(d.block)} (had ${d.count} copies)`));
-    console.log('');
+    for (const d of fixed) say(dim(`Duplicate removed: ${label(d.block.type)} ${component(d.block)} (had ${d.count} copies)`));
+    say('');
+}
+
+function copyToClipboard(text) {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    if (process.platform === 'win32') {
+        // clip.exe garbles UTF-8 (box-drawing characters), so go through a UTF-8 file and PowerShell.
+        const file = path.join(os.tmpdir(), `profile-diff-${process.pid}.txt`);
+        fs.writeFileSync(file, text, 'utf8');
+        try {
+            execFileSync('powershell', ['-NoProfile', '-Command', `Get-Content -Raw -Encoding UTF8 -LiteralPath '${file}' | Set-Clipboard`], { stdio: 'ignore' });
+        } finally {
+            fs.unlinkSync(file);
+        }
+    } else if (process.platform === 'darwin') {
+        execFileSync('pbcopy', [], { input: text });
+    } else {
+        execFileSync('xclip', ['-selection', 'clipboard'], { input: text });
+    }
 }
 
 
@@ -379,13 +412,19 @@ function main(argv) {
     const rest = [];
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--repo') args.repo = argv[++i];
+        else if (argv[i] === '--slack') args.slack = true;
         else if (argv[i] === '-h' || argv[i] === '--help') args.help = true;
         else rest.push(argv[i]);
     }
     if (args.help || rest.length !== 1) {
-        console.log('Usage: node profile-diff.js <commit> [--repo <path to git repo>]');
+        console.log('Usage: node profile-diff.js <commit> [--repo <path to git repo>] [--slack]');
         console.log('Shows the real changes to profiles and permission sets in a commit, ignoring blocks that only moved.');
+        console.log('--slack  formats the result for Slack (tables in code blocks) and copies it to the clipboard.');
         return args.help ? 0 : 1;
+    }
+    if (args.slack) {
+        slackMode = true;
+        useColor = false;
     }
 
     const commit = tryGit(args.repo, ['rev-parse', '--verify', '--quiet', rest[0] + '^{commit}']);
@@ -397,24 +436,32 @@ function main(argv) {
     const subject = git(args.repo, ['log', '-1', '--format=%s', commit]).trim();
     const isMerge = !!tryGit(args.repo, ['rev-parse', '--verify', '--quiet', commit + '^2']);
 
-    console.log(bold(`Commit ${commit.slice(0, 10)}`) + `  ${subject}`);
-    console.log(dim(`Compared with ${isMerge ? 'first parent' : 'parent'} ${parent.slice(0, 10)}`) + '\n');
+    say(heading(`Commit ${commit.slice(0, 10)}`) + `  ${subject}`);
+    say(dim(`Compared with ${isMerge ? 'first parent' : 'parent'} ${parent.slice(0, 10)}`));
+    say('');
 
     const files = changedPermissionFiles(args.repo, parent, commit);
     if (!files.length) {
-        console.log('No profile or permission set files changed in this commit.');
-        return 0;
+        say('No profile or permission set files changed in this commit.');
+    } else {
+        let total = 0;
+        for (const file of files) {
+            const before = file.status === 'A' ? null : git(args.repo, ['show', `${parent}:${file.oldPath}`]);
+            const after = file.status === 'D' ? null : git(args.repo, ['show', `${commit}:${file.newPath}`]);
+            const result = compareXml(before, after);
+            if (file.status !== 'A' && file.status !== 'D') total += result.changes.length;
+            printFile(file, lineStat(args.repo, parent, commit, file), result);
+        }
+        say(heading(`${plural(files.length, 'file')} checked, ${plural(total, 'real change')}.`));
     }
 
-    let total = 0;
-    for (const file of files) {
-        const before = file.status === 'A' ? null : git(args.repo, ['show', `${parent}:${file.oldPath}`]);
-        const after = file.status === 'D' ? null : git(args.repo, ['show', `${commit}:${file.newPath}`]);
-        const result = compareXml(before, after);
-        if (file.status !== 'A' && file.status !== 'D') total += result.changes.length;
-        printFile(file, lineStat(args.repo, parent, commit, file), result);
+    const text = output.join('\n');
+    console.log(text);
+    if (args.slack) {
+        copyToClipboard(text);
+        const note = text.length > 40000 ? ` It is ${text.length} characters; Slack allows 40000 per message, so paste it as a snippet or file (Ctrl+Shift+Enter in Slack).` : '';
+        console.log(`\nCopied to the clipboard. Paste it into Slack.${note}`);
     }
-    console.log(bold(`${plural(files.length, 'file')} checked, ${plural(total, 'real change')}.`));
     return 0;
 }
 
