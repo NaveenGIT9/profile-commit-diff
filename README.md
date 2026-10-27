@@ -40,7 +40,16 @@ node profile-diff.js <commit> --repo <path to the Salesforce repo>
 node profile-diff.js <commit> --slack
 ```
 
-This copies the result to the clipboard, ready to paste into a Slack message. In Slack the tables only line up inside a code block, so `--slack` puts each table in a code block, draws it with plain `| - +` characters and keeps it to 120 characters wide. Colours don't carry over to Slack; the `+ Added` / `- Removed` / `~ Changed` labels still show what happened. If the result is longer than Slack's 40,000-character limit for a message, it says so; paste it as a snippet instead (Ctrl+Shift+Enter in Slack).
+This copies the result to the clipboard as plain text: tables drawn with `| - +` characters, at most 120 characters wide.
+
+Slack only lines the columns up in a code block, and pasting text with ``` in it does not make one, so:
+
+1. In the Slack message box, click the code block button (`</>`) or press Ctrl+Alt+Shift+C.
+2. Paste with Ctrl+V and send.
+
+For a long result (over Slack's 40,000-character limit for a message), send it as a snippet instead: Ctrl+Shift+Enter, paste, Create Snippet.
+
+Colours don't carry over to Slack; the `+ Added` / `- Removed` / `~ Changed` labels still show what happened.
 
 `<commit>` can be a SHA (full or short), a branch or a tag. If the commit was made in Copado or on GitHub, run `git fetch` first so it exists locally.
 

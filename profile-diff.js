@@ -318,11 +318,10 @@ function renderTable(columns, rows) {
         addRow(r.cells, r.colors);
     });
     out.push(rule(box.bottom));
-    // In Slack only a code block keeps a fixed-width font, so the columns stay aligned.
-    return slackMode ? '```\n' + out.join('\n') + '\n```' : out.join('\n');
+    return out.join('\n');
 }
 
-const heading = (text) => (slackMode ? `*${text}*` : bold(text));
+const heading = bold;
 
 function changeRows(changes) {
     const rows = [];
@@ -459,8 +458,16 @@ function main(argv) {
     console.log(text);
     if (args.slack) {
         copyToClipboard(text);
-        const note = text.length > 40000 ? ` It is ${text.length} characters; Slack allows 40000 per message, so paste it as a snippet or file (Ctrl+Shift+Enter in Slack).` : '';
-        console.log(`\nCopied to the clipboard. Paste it into Slack.${note}`);
+        // Slack only keeps columns aligned in a code block, and pasted ``` is not turned into one.
+        console.log('\nCopied to the clipboard. To paste into Slack so the table stays aligned:');
+        if (text.length > 40000) {
+            console.log(`  It is ${text.length} characters (over Slack's 40000 limit for a message), so send it as a snippet:`);
+            console.log('  Ctrl+Shift+Enter in the message box, paste with Ctrl+V, then Create Snippet.');
+        } else {
+            console.log('  1. Click the code block button (</>) in the message box, or press Ctrl+Alt+Shift+C.');
+            console.log('  2. Paste with Ctrl+V and send.');
+            console.log('  Or send it as a snippet: Ctrl+Shift+Enter, paste, Create Snippet.');
+        }
     }
     return 0;
 }
