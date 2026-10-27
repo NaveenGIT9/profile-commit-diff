@@ -5,14 +5,25 @@ When a profile or permission set is committed from Copado, blocks such as `layou
 Give this tool a commit and it shows only the real changes to the profiles and permission sets in it.
 
 ```
-Commit 75957212ac  US-0029918 Tech Debt : Remove EDIT access FLS on ACV metric fields for business users
-
 force-app/main/default/profiles/Copado Integration - Rubrik API Integration.profile-meta.xml
-  git diff +156 -149 lines  ->  13 real changes
-    ~ fieldPermissions  Opportunity.ACV_Amount__c   editable: true -> false
-    ~ fieldPermissions  Opportunity.ARR_Amount__c   editable: true -> false
-    + fieldPermissions  OpportunityLineItem.Renewal_ACV__c   editable=false  readable=false
-    ...
+git diff +156 -149 lines  →  15 real changes (3 added, 12 changed)
+┌───────────┬──────────────┬─────────────────────────────────────────────┬──────────┬────────┬────────────────────────────────┐
+│ Change    │ Type         │ Component                                   │ Setting  │ Before │ After                          │
+├───────────┼──────────────┼─────────────────────────────────────────────┼──────────┼────────┼────────────────────────────────┤
+│ + Added   │ Description  │                                             │          │        │ (empty)                        │
+├───────────┼──────────────┼─────────────────────────────────────────────┼──────────┼────────┼────────────────────────────────┤
+│ ~ Changed │ Field access │ Opportunity.ACV_Amount__c                   │ editable │ true   │ false                          │
+│ + Added   │ Field access │ OpportunityLineItem.Renewal_ACV__c          │          │        │ editable=false, readable=false │
+│ ...       │              │                                             │          │        │                                │
+└───────────┴──────────────┴─────────────────────────────────────────────┴──────────┴────────┴────────────────────────────────┘
+
+Summary
+┌─────────────────────────────────────────────────────┬────────────────┬──────────────┬───────┬─────────┬─────────┬────────────┐
+│ File                                                │ Git diff lines │ Real changes │ Added │ Removed │ Changed │ Duplicates │
+├─────────────────────────────────────────────────────┼────────────────┼──────────────┼───────┼─────────┼─────────┼────────────┤
+│ Copado Integration - Rubrik API Integration.profile │ +156 -149      │ 15           │ 3     │ 0       │ 12      │ 0          │
+│ Rubrik Backup API - Rubrik API Integration.profile  │ +13 -13        │ 11           │ 0     │ 0       │ 11      │ 0          │
+└─────────────────────────────────────────────────────┴────────────────┴──────────────┴───────┴─────────┴─────────┴────────────┘
 ```
 
 ## Usage
@@ -35,14 +46,16 @@ node profile-diff.js <commit> --repo <path to the Salesforce repo>
 
 ## Output
 
-| Mark | Meaning |
-|---|---|
-| `+` | Block added, e.g. a new field permission |
-| `-` | Block removed |
-| `~` | Same block with a different value, shown as `old -> new` |
-| `!` | Duplicate block in the file: the same field, object, class, etc. listed more than once (can fail a deploy) |
+One table per file, grouped by type, then a summary table.
 
-A file that was only re-ordered shows `no real changes (only re-ordered)`. A new or deleted file shows its block count only.
+| Change | Colour | Meaning |
+|---|---|---|
+| `+ Added` | green | Block added, e.g. a new field permission; its settings are in **After** |
+| `- Removed` | red | Block removed; its settings are in **Before** |
+| `~ Changed` | yellow | Same block with a different value: one row per changed **Setting**, old value in **Before** (red), new value in **After** (green) |
+| `!` duplicates | magenta | The same field, object, class etc. listed more than once in the file (can fail a deploy), with whether the copies differ and whether this commit introduced them |
+
+A file that was only re-ordered shows `no real changes (only re-ordered)`. A new or deleted file shows its block count only. Colours are switched off when the output is piped to a file or `NO_COLOR` is set.
 
 ## How it works
 

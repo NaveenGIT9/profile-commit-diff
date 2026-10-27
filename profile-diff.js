@@ -221,45 +221,194 @@ const green = paint(32);
 const red = paint(31);
 const yellow = paint(33);
 const magenta = paint(35);
+const cyan = paint(36);
 const bold = paint(1);
 const dim = paint(2);
 
+const LABELS = {
+    applicationVisibilities: 'App visibility',
+    categoryGroupVisibilities: 'Data category',
+    classAccesses: 'Apex class',
+    custom: 'Custom profile',
+    customMetadataTypeAccesses: 'Custom metadata',
+    customPermissions: 'Custom permission',
+    customSettingAccesses: 'Custom setting',
+    description: 'Description',
+    emailRoutingAddressAccesses: 'Email routing address',
+    externalCredentialPrincipalAccesses: 'External credential',
+    externalDataSourceAccesses: 'External data source',
+    fieldPermissions: 'Field access',
+    flowAccesses: 'Flow',
+    hasActivationRequired: 'Session activation',
+    label: 'Label',
+    layoutAssignments: 'Page layout',
+    license: 'License',
+    loginHours: 'Login hours',
+    loginIpRanges: 'Login IP range',
+    objectPermissions: 'Object access',
+    pageAccesses: 'Visualforce page',
+    profileActionOverrides: 'Action override',
+    recordTypeVisibilities: 'Record type',
+    tabSettings: 'Tab',
+    tabVisibilities: 'Tab',
+    userLicense: 'User license',
+    userPermissions: 'User permission'
+};
+
+const label = (type) => LABELS[type] || type;
+const component = (block) => (block.key === block.type ? '' : block.key);
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 function details(block) {
     const skip = new Set(keyFieldNames(block));
-    if (!block.fields.size) return KEY_FIELDS[block.type] || block.key === block.canon ? '' : block.canon;
-    return [...block.fields].filter(([name]) => !skip.has(name)).map(([name, value]) => `${name}=${value}`).join('  ');
+    if (!block.fields.size) return block.key === block.canon ? '' : block.canon;
+    return [...block.fields].filter(([name]) => !skip.has(name)).map(([name, value]) => `${name}=${value}`).join(', ');
+}
+
+function wrap(text, width) {
+    const lines = [];
+    for (const paragraph of String(text).split('\n')) {
+        let rest = paragraph;
+        while (rest.length > width) {
+            let cut = rest.lastIndexOf(' ', width);
+            if (cut <= 0) cut = width;
+            lines.push(rest.slice(0, cut).trimEnd());
+            rest = rest.slice(cut).trimStart();
+        }
+        lines.push(rest);
+    }
+    return lines;
+}
+
+// columns: [{ title, max }]; rows: [{ cells: [text], colors: [fn], group }] -- a line is drawn where group changes.
+function renderTable(columns, rows) {
+    const longest = (text) => Math.max(...String(text).split('\n').map((l) => l.length));
+    const widths = columns.map((c, i) => Math.min(c.max || Infinity, Math.max(c.title.length, ...rows.map((r) => longest(r.cells[i] ?? '')))));
+    const limit = (process.stdout.columns || 200) - 1;
+    const border = 3 * columns.length + 1;
+    while (widths.reduce((a, b) => a + b, 0) + border > limit) {
+        const i = widths.indexOf(Math.max(...widths));
+        if (widths[i] <= 12) break;
+        widths[i]--;
+    }
+
+    const rule = (left, mid, right) => dim(left + widths.map((w) => '─'.repeat(w + 2)).join(mid) + right);
+    const out = [rule('┌', '┬', '┐')];
+    const addRow = (cells, colors = []) => {
+        const wrapped = cells.map((c, i) => wrap(c ?? '', widths[i]));
+        const height = Math.max(...wrapped.map((w) => w.length));
+        for (let k = 0; k < height; k++) {
+            const parts = wrapped.map((w, i) => ' ' + (colors[i] || String)((w[k] || '').padEnd(widths[i])) + ' ');
+            out.push(dim('│') + parts.join(dim('│')) + dim('│'));
+        }
+    };
+    addRow(columns.map((c) => c.title), columns.map(() => bold));
+    out.push(rule('├', '┼', '┤'));
+    rows.forEach((r, i) => {
+        if (i > 0 && r.group !== rows[i - 1].group) out.push(rule('├', '┼', '┤'));
+        addRow(r.cells, r.colors);
+    });
+    out.push(rule('└', '┴', '┘'));
+    return out.join('\n');
+}
+
+function changeRows(changes) {
+    const rows = [];
+    for (const c of changes) {
+        const group = c.block.type;
+        const what = [label(c.block.type), component(c.block)];
+        if (c.kind === 'added') {
+            rows.push({ group, cells: ['+ Added', ...what, '', '', details(c.block)], colors: [green, null, null, null, null, green] });
+        } else if (c.kind === 'removed') {
+            rows.push({ group, cells: ['- Removed', ...what, '', details(c.block), ''], colors: [red, null, null, null, red, null] });
+        } else {
+            c.diffs.forEach((d, i) => {
+                const lead = i === 0 ? ['~ Changed', ...what] : ['', '', ''];
+                rows.push({ group, cells: [...lead, d.name === 'value' ? '' : d.name, d.from, d.to], colors: [yellow, null, null, null, red, green] });
+            });
+        }
+    }
+    return rows;
+}
+
+const CHANGE_COLUMNS = [
+    { title: 'Change' },
+    { title: 'Type' },
+    { title: 'Component', max: 60 },
+    { title: 'Setting', max: 20 },
+    { title: 'Before', max: 40 },
+    { title: 'After', max: 40 }
+];
+
+function countKinds(changes) {
+    const counts = { added: 0, removed: 0, changed: 0 };
+    for (const c of changes) counts[c.kind]++;
+    return counts;
 }
 
 function printFile(file, stat, result) {
     console.log(bold(file.newPath) + (file.status === 'R' ? dim(`  (renamed from ${file.oldPath})`) : ''));
-    const real = result.changes.length;
-    const statText = `git diff +${stat.added} -${stat.removed} lines`;
-    if (file.status === 'A') console.log(`  ${statText}, ${green('new file')} with ${result.afterCount} blocks`);
-    else if (file.status === 'D') console.log(`  ${statText}, ${red('file deleted')} (${result.beforeCount} blocks)`);
-    else console.log(`  ${statText}  ->  ${real ? bold(real + ' real change' + (real === 1 ? '' : 's')) : green('no real changes (only re-ordered)')}`);
-
-    if (file.status !== 'A' && file.status !== 'D') {
-        const width = Math.max(0, ...result.changes.map((c) => c.block.type.length));
-        for (const c of result.changes) {
-            const type = c.block.type.padEnd(width);
-            if (c.kind === 'added') console.log(green(`    + ${type}  ${c.block.key}`) + dim(`   ${details(c.block)}`));
-            else if (c.kind === 'removed') console.log(red(`    - ${type}  ${c.block.key}`) + dim(`   ${details(c.block)}`));
-            else {
-                const diffs = c.diffs.map((d) => `${d.name}: ${d.from} -> ${d.to}`).join('  ');
-                console.log(yellow(`    ~ ${type}  ${c.block.key}`) + `   ${diffs}`);
-            }
-        }
+    const statText = dim(`git diff +${stat.added} -${stat.removed} lines`);
+    if (file.status === 'A') console.log(`${statText}  →  ${green('new file')} with ${result.afterCount} blocks`);
+    else if (file.status === 'D') console.log(`${statText}  →  ${red('file deleted')} (${result.beforeCount} blocks)`);
+    else if (!result.changes.length) console.log(`${statText}  →  ${green('no real changes (only re-ordered)')}`);
+    else {
+        const k = countKinds(result.changes);
+        const parts = [k.added && green(`${k.added} added`), k.removed && red(`${k.removed} removed`), k.changed && yellow(`${k.changed} changed`)].filter(Boolean);
+        console.log(`${statText}  →  ${bold(plural(result.changes.length, 'real change'))} (${parts.join(', ')})`);
+        console.log(renderTable(CHANGE_COLUMNS, changeRows(result.changes)));
     }
 
-    for (const d of result.duplicates) {
-        const what = `${d.block.type} ${d.block.key}`;
-        if (d.fixed) console.log(dim(`    duplicate removed: ${what} (had ${d.count} copies)`));
-        else {
-            const kind = d.identical ? 'identical copies' : 'copies with DIFFERENT values';
-            console.log(magenta(`    ! duplicate ${what}: ${d.count} ${kind}${d.existedBefore ? ', already there before this commit' : ', new in this commit'}`));
-        }
+    const duplicates = result.duplicates.filter((d) => !d.fixed);
+    const fixed = result.duplicates.filter((d) => d.fixed);
+    if (duplicates.length) {
+        console.log(magenta(`! ${plural(duplicates.length, 'duplicate block')} in this file (same component listed more than once)`));
+        const rows = duplicates.map((d) => ({
+            group: 0,
+            cells: [label(d.block.type), component(d.block), String(d.count), d.identical ? 'identical' : 'DIFFERENT values', d.existedBefore ? 'before this commit' : 'this commit'],
+            colors: [null, null, null, d.identical ? null : magenta, d.existedBefore ? dim : magenta]
+        }));
+        console.log(renderTable([{ title: 'Type' }, { title: 'Component', max: 60 }, { title: 'Copies' }, { title: 'Values' }, { title: 'Introduced in' }], rows));
     }
+    for (const d of fixed) console.log(dim(`Duplicate removed: ${label(d.block.type)} ${component(d.block)} (had ${d.count} copies)`));
     console.log('');
+}
+
+function printSummary(summaries) {
+    const totals = { added: 0, removed: 0, changed: 0, real: 0 };
+    const rows = summaries.map(({ file, stat, result }) => {
+        const k = countKinds(result.changes);
+        const newOrDeleted = file.status === 'A' ? 'new file' : file.status === 'D' ? 'deleted' : null;
+        if (!newOrDeleted) {
+            totals.added += k.added;
+            totals.removed += k.removed;
+            totals.changed += k.changed;
+            totals.real += result.changes.length;
+        }
+        const dupes = result.duplicates.filter((d) => !d.fixed).length;
+        const num = (n, color) => (newOrDeleted ? '' : n ? color(String(n)) : dim('0'));
+        return {
+            group: 0,
+            cells: [
+                file.newPath.split('/').pop().replace(/-meta\.xml$/, ''),
+                `+${stat.added} -${stat.removed}`,
+                newOrDeleted || String(result.changes.length),
+                num(k.added, green),
+                num(k.removed, red),
+                num(k.changed, yellow),
+                dupes ? magenta(String(dupes)) : dim('0')
+            ],
+            colors: [null, dim, newOrDeleted ? cyan : result.changes.length ? bold : green]
+        };
+    });
+    console.log(bold('Summary'));
+    console.log(
+        renderTable(
+            [{ title: 'File', max: 70 }, { title: 'Git diff lines' }, { title: 'Real changes' }, { title: 'Added' }, { title: 'Removed' }, { title: 'Changed' }, { title: 'Duplicates' }],
+            rows
+        )
+    );
+    console.log(bold(`${plural(summaries.length, 'file')} checked, ${plural(totals.real, 'real change')}.`));
 }
 
 function main(argv) {
@@ -294,15 +443,16 @@ function main(argv) {
         return 0;
     }
 
-    let total = 0;
+    const summaries = [];
     for (const file of files) {
         const before = file.status === 'A' ? null : git(args.repo, ['show', `${parent}:${file.oldPath}`]);
         const after = file.status === 'D' ? null : git(args.repo, ['show', `${commit}:${file.newPath}`]);
         const result = compareXml(before, after);
-        if (file.status !== 'A' && file.status !== 'D') total += result.changes.length;
-        printFile(file, lineStat(args.repo, parent, commit, file), result);
+        const stat = lineStat(args.repo, parent, commit, file);
+        printFile(file, stat, result);
+        summaries.push({ file, stat, result });
     }
-    console.log(bold(`${files.length} file${files.length === 1 ? '' : 's'} checked, ${total} real change${total === 1 ? '' : 's'}.`));
+    printSummary(summaries);
     return 0;
 }
 
