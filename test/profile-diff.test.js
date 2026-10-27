@@ -44,11 +44,16 @@ test('whitespace and child order inside a block are ignored', () => {
     assert.strictEqual(compareXml(before, after).changes.length, 0);
 });
 
-test('nil elements and fullName are treated as absent', () => {
+test('nil elements are shown as (empty); fullName is ignored', () => {
     const before = `<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n    <fullName>Admin</fullName>\n${field('Account.A__c', false, true)}\n    <userLicense>Salesforce</userLicense>\n</Profile>`;
     const after = `<Profile xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:n1="http://www.w3.org/2001/XMLSchema-instance">\n    <description n1:nil="true" />\n${field('Account.A__c', false, true)}\n    <loginHours n1:nil="true" />\n    <userLicense n1:nil="true" />\n</Profile>`;
     const { changes } = compareXml(before, after);
-    assert.deepStrictEqual(changes.map((c) => `${c.kind} ${c.block.type}`), ['removed userLicense']);
+    assert.deepStrictEqual(changes.map((c) => `${c.kind} ${c.block.type} ${c.block.canon}`), [
+        'added description (empty)',
+        'added loginHours (empty)',
+        'changed userLicense (empty)'
+    ]);
+    assert.deepStrictEqual(changes[2].diffs, [{ name: 'value', from: 'Salesforce', to: '(empty)' }]);
 });
 
 test('duplicates are flagged', () => {

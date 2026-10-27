@@ -50,7 +50,7 @@ function parseXml(text) {
             if (m[2]) {
                 if (stack.length > 1) stack.pop();
             } else {
-                // Copado writes empty values as <tag xsi:nil="true"/>, which means the same as leaving the tag out.
+                // Copado writes <tag xsi:nil="true"/>; it deploys as a blank value, so it is a change, shown as (empty).
                 const nil = /(^|\s)[\w.-]+:nil\s*=\s*["']true["']/.test(m[4]);
                 const node = { name: m[3], children: [], text: '', nil };
                 top.children.push(node);
@@ -63,10 +63,11 @@ function parseXml(text) {
     return doc;
 }
 
-const present = (node) => node.children.filter((c) => !c.nil);
+const EMPTY = '(empty)';
 
 function canonical(node) {
-    const children = present(node);
+    if (node.nil) return EMPTY;
+    const children = node.children;
     if (!children.length) return node.text.trim();
     return '{' + children.map((c) => c.name + '=' + canonical(c)).sort().join(';') + '}';
 }
@@ -78,9 +79,9 @@ function readBlocks(xml) {
     if (xml == null) return [];
     const root = parseXml(xml).children[0];
     if (!root) return [];
-    return present(root).filter((node) => !IGNORED.has(node.name)).map((node) => {
+    return root.children.filter((node) => !IGNORED.has(node.name)).map((node) => {
         const fields = new Map();
-        for (const child of present(node)) {
+        for (const child of node.children) {
             const value = canonical(child);
             fields.set(child.name, fields.has(child.name) ? fields.get(child.name) + ', ' + value : value);
         }

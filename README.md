@@ -65,9 +65,9 @@ A file that was only re-ordered shows `no real changes (only re-ordered)`. A new
 
 4. Compares the two sets by that identity, so position, indentation and the order of tags inside a block don't matter.
 
-Also ignored:
-- `<tag xsi:nil="true"/>` (Copado writes empty values this way); it means the same as the tag not being there.
-- `fullName`, since Salesforce takes the name from the file name.
+`<tag n1:nil="true" />` (how Copado writes an empty value) is shown as `(empty)`, for example `+ description (empty)`, because it deploys as a blank value.
+
+`fullName` is ignored, since Salesforce takes the name from the file name.
 
 ## Tests
 
