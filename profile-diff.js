@@ -464,10 +464,7 @@ function main(argv) {
         console.log('--slack  formats the result for Slack (tables in code blocks) and copies it to the clipboard.');
         return args.help ? 0 : 1;
     }
-    if (args.slack) {
-        slackMode = true;
-        useColor = false;
-    }
+    if (args.slack) slackMode = true;
 
     const commit = tryGit(args.repo, ['rev-parse', '--verify', '--quiet', rest[0] + '^{commit}']);
     if (!commit) {
@@ -500,11 +497,13 @@ function main(argv) {
     const text = output.join('\n');
     console.log(text);
     if (args.slack) {
-        copyToClipboard(text);
+        // Colours stay in the terminal; Slack would show the escape codes as text.
+        const plain = text.replace(/\x1b\[\d+m/g, '');
+        copyToClipboard(plain);
         // Slack only keeps columns aligned in a code block, and pasted ``` is not turned into one.
         console.log('\nCopied to the clipboard. To paste into Slack so the table stays aligned:');
-        if (text.length > 40000) {
-            console.log(`  It is ${text.length} characters (over Slack's 40000 limit for a message), so send it as a snippet:`);
+        if (plain.length > 40000) {
+            console.log(`  It is ${plain.length} characters (over Slack's 40000 limit for a message), so send it as a snippet:`);
             console.log('  Ctrl+Shift+Enter in the message box, paste with Ctrl+V, then Create Snippet.');
         } else {
             console.log('  1. Click the code block button (</>) in the message box, or press Ctrl+Alt+Shift+C.');

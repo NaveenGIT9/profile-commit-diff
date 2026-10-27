@@ -49,7 +49,7 @@ Slack only lines the columns up in a code block, and pasting text with ``` in it
 
 For a long result (over Slack's 40,000-character limit for a message), send it as a snippet instead: Ctrl+Shift+Enter, paste, Create Snippet.
 
-Colours don't carry over to Slack; the `+ Added` / `- Removed` / `~ Changed` labels still show what happened.
+The terminal keeps its colours; the copy on the clipboard is plain text, because Slack can't show colours in a code block. The `+ Added` / `- Removed` / `~ Changed` labels still show what happened.
 
 `<commit>` can be a SHA (full or short), a branch or a tag. If the commit was made in Copado or on GitHub, run `git fetch` first so it exists locally.
 
