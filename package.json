@@ -1,0 +1,16 @@
+{
+  "name": "profile-commit-diff",
+  "version": "1.0.0",
+  "description": "Shows the real changes to Salesforce profiles and permission sets in a git commit, ignoring blocks that were only re-ordered.",
+  "bin": {
+    "profile-diff": "profile-diff.js"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

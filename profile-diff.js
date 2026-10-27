@@ -1,0 +1,317 @@
+#!/usr/bin/env node
+'use strict';
+
+const { execFileSync } = require('child_process');
+
+const PERMISSION_FILE = /\.(profile|permissionset)(-meta\.xml)?$/;
+
+// The child element(s) that identify a block; anything else in the block is its value.
+const KEY_FIELDS = {
+    applicationVisibilities: ['application'],
+    categoryGroupVisibilities: ['dataCategoryGroup'],
+    classAccesses: ['apexClass'],
+    customMetadataTypeAccesses: ['name'],
+    customPermissions: ['name'],
+    customSettingAccesses: ['name'],
+    emailRoutingAddressAccesses: ['name'],
+    externalCredentialPrincipalAccesses: ['externalCredentialPrincipal'],
+    externalDataSourceAccesses: ['externalDataSource'],
+    fieldPermissions: ['field'],
+    flowAccesses: ['flow'],
+    loginIpRanges: ['startAddress', 'endAddress'],
+    objectPermissions: ['object'],
+    pageAccesses: ['apexPage'],
+    profileActionOverrides: ['actionName', 'pageOrSobjectType', 'formFactor', 'recordType', 'profile'],
+    recordTypeVisibilities: ['recordType'],
+    tabSettings: ['tab'],
+    tabVisibilities: ['tab'],
+    userPermissions: ['name']
+};
+
+function decode(text) {
+    return text.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (whole, entity) => {
+        const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[entity.toLowerCase()];
+        if (named) return named;
+        const code = entity[1] === 'x' || entity[1] === 'X' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
+        return String.fromCodePoint(code);
+    });
+}
+
+function parseXml(text) {
+    const doc = { name: '#document', children: [], text: '' };
+    const stack = [doc];
+    const token = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[([\s\S]*?)\]\]>|<(\/?)([^\s/>!?]+)([^>]*?)(\/?)>|([^<]+)/g;
+    let m;
+    while ((m = token.exec(text))) {
+        const top = stack[stack.length - 1];
+        if (m[1] !== undefined) {
+            top.text += m[1];
+        } else if (m[3]) {
+            if (m[2]) {
+                if (stack.length > 1) stack.pop();
+            } else {
+                // Copado writes empty values as <tag xsi:nil="true"/>, which means the same as leaving the tag out.
+                const nil = /(^|\s)[\w.-]+:nil\s*=\s*["']true["']/.test(m[4]);
+                const node = { name: m[3], children: [], text: '', nil };
+                top.children.push(node);
+                if (!m[5]) stack.push(node);
+            }
+        } else if (m[6] !== undefined) {
+            top.text += decode(m[6]);
+        }
+    }
+    return doc;
+}
+
+const present = (node) => node.children.filter((c) => !c.nil);
+
+function canonical(node) {
+    const children = present(node);
+    if (!children.length) return node.text.trim();
+    return '{' + children.map((c) => c.name + '=' + canonical(c)).sort().join(';') + '}';
+}
+
+// fullName is ignored: Salesforce takes the name from the file name, and Copado often drops the line.
+const IGNORED = new Set(['fullName']);
+
+function readBlocks(xml) {
+    if (xml == null) return [];
+    const root = parseXml(xml).children[0];
+    if (!root) return [];
+    return present(root).filter((node) => !IGNORED.has(node.name)).map((node) => {
+        const fields = new Map();
+        for (const child of present(node)) {
+            const value = canonical(child);
+            fields.set(child.name, fields.has(child.name) ? fields.get(child.name) + ', ' + value : value);
+        }
+        return { type: node.name, fields, canon: canonical(node) };
+    });
+}
+
+function keyFieldNames(block) {
+    if (block.type === 'layoutAssignments') return ['recordType'];
+    return KEY_FIELDS[block.type] || [];
+}
+
+function blockKey(block, repeatedTypes) {
+    if (block.type === 'layoutAssignments') {
+        // A record type can have one layout per layout object, e.g. Case and CaseClose for Case.Support.
+        const layoutObject = (block.fields.get('layout') || '').split('-')[0];
+        const recordType = block.fields.get('recordType');
+        return recordType ? `${layoutObject} layout for record type ${recordType}` : `${layoutObject} default layout`;
+    }
+    const names = KEY_FIELDS[block.type];
+    if (names) {
+        if (names.length === 1) return block.fields.get(names[0]) || '';
+        return names.filter((n) => block.fields.has(n)).map((n) => n + '=' + block.fields.get(n)).join(', ');
+    }
+    // Elements that occur once (userLicense, custom, loginHours, description...) are identified by their tag.
+    return repeatedTypes.has(block.type) ? block.canon : block.type;
+}
+
+function repeated(blocks, into) {
+    const seen = new Set();
+    for (const b of blocks) {
+        if (seen.has(b.type)) into.add(b.type);
+        seen.add(b.type);
+    }
+    return into;
+}
+
+function groupByKey(blocks) {
+    const groups = new Map();
+    for (const b of blocks) {
+        const id = b.type + '\0' + b.key;
+        if (!groups.has(id)) groups.set(id, []);
+        groups.get(id).push(b);
+    }
+    return groups;
+}
+
+function fieldDiffs(before, after) {
+    if (!before.fields.size && !after.fields.size) return [{ name: 'value', from: before.canon, to: after.canon }];
+    const names = [...new Set([...after.fields.keys(), ...before.fields.keys()])];
+    return names
+        .filter((n) => before.fields.get(n) !== after.fields.get(n))
+        .map((n) => ({ name: n, from: before.fields.get(n) ?? '(none)', to: after.fields.get(n) ?? '(none)' }));
+}
+
+function compareXml(beforeXml, afterXml) {
+    const beforeBlocks = readBlocks(beforeXml);
+    const afterBlocks = readBlocks(afterXml);
+    const repeatedTypes = repeated(afterBlocks, repeated(beforeBlocks, new Set()));
+    for (const b of beforeBlocks.concat(afterBlocks)) b.key = blockKey(b, repeatedTypes);
+
+    const before = groupByKey(beforeBlocks);
+    const after = groupByKey(afterBlocks);
+    const changes = [];
+    for (const [id, list] of after) {
+        const block = list[0];
+        const old = before.get(id);
+        if (!old) changes.push({ kind: 'added', block });
+        else if (!old.some((o) => o.canon === block.canon)) changes.push({ kind: 'changed', block, diffs: fieldDiffs(old[0], block) });
+    }
+    for (const [id, list] of before) {
+        if (!after.has(id)) changes.push({ kind: 'removed', block: list[0] });
+    }
+    changes.sort((a, b) => a.block.type.localeCompare(b.block.type) || a.block.key.localeCompare(b.block.key));
+
+    const duplicates = [];
+    for (const [id, list] of after) {
+        if (list.length < 2) continue;
+        duplicates.push({
+            block: list[0],
+            count: list.length,
+            identical: list.every((b) => b.canon === list[0].canon),
+            existedBefore: (before.get(id) || []).length > 1
+        });
+    }
+    for (const [id, list] of before) {
+        if (list.length > 1 && (after.get(id) || []).length < 2) duplicates.push({ block: list[0], count: list.length, fixed: true });
+    }
+
+    return { changes, duplicates, beforeCount: beforeBlocks.length, afterCount: afterBlocks.length };
+}
+
+// ---------- git ----------
+
+function git(repo, args, input) {
+    return execFileSync('git', args, {
+        cwd: repo,
+        encoding: 'utf8',
+        input,
+        maxBuffer: 1024 * 1024 * 1024,
+        stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe']
+    });
+}
+
+function tryGit(repo, args) {
+    try {
+        return git(repo, args).trim();
+    } catch {
+        return null;
+    }
+}
+
+function changedPermissionFiles(repo, parent, commit) {
+    const parts = git(repo, ['diff-tree', '-r', '-z', '-M', '--name-status', '--no-commit-id', parent, commit]).split('\0');
+    const files = [];
+    for (let i = 0; i < parts.length && parts[i]; ) {
+        const status = parts[i++];
+        const oldPath = parts[i++];
+        const newPath = status[0] === 'R' || status[0] === 'C' ? parts[i++] : oldPath;
+        if (PERMISSION_FILE.test(newPath) || PERMISSION_FILE.test(oldPath)) files.push({ status: status[0], oldPath, newPath });
+    }
+    return files;
+}
+
+function lineStat(repo, parent, commit, file) {
+    const paths = file.oldPath === file.newPath ? [file.newPath] : [file.oldPath, file.newPath];
+    const line = git(repo, ['diff', '--numstat', '-M', parent, commit, '--', ...paths]).split('\n')[0] || '';
+    const [added, removed] = line.split('\t');
+    return { added: added || '0', removed: removed || '0' };
+}
+
+// ---------- output ----------
+
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const paint = (code) => (text) => (useColor ? `\x1b[${code}m${text}\x1b[0m` : text);
+const green = paint(32);
+const red = paint(31);
+const yellow = paint(33);
+const magenta = paint(35);
+const bold = paint(1);
+const dim = paint(2);
+
+function details(block) {
+    const skip = new Set(keyFieldNames(block));
+    if (!block.fields.size) return KEY_FIELDS[block.type] || block.key === block.canon ? '' : block.canon;
+    return [...block.fields].filter(([name]) => !skip.has(name)).map(([name, value]) => `${name}=${value}`).join('  ');
+}
+
+function printFile(file, stat, result) {
+    console.log(bold(file.newPath) + (file.status === 'R' ? dim(`  (renamed from ${file.oldPath})`) : ''));
+    const real = result.changes.length;
+    const statText = `git diff +${stat.added} -${stat.removed} lines`;
+    if (file.status === 'A') console.log(`  ${statText}, ${green('new file')} with ${result.afterCount} blocks`);
+    else if (file.status === 'D') console.log(`  ${statText}, ${red('file deleted')} (${result.beforeCount} blocks)`);
+    else console.log(`  ${statText}  ->  ${real ? bold(real + ' real change' + (real === 1 ? '' : 's')) : green('no real changes (only re-ordered)')}`);
+
+    if (file.status !== 'A' && file.status !== 'D') {
+        const width = Math.max(0, ...result.changes.map((c) => c.block.type.length));
+        for (const c of result.changes) {
+            const type = c.block.type.padEnd(width);
+            if (c.kind === 'added') console.log(green(`    + ${type}  ${c.block.key}`) + dim(`   ${details(c.block)}`));
+            else if (c.kind === 'removed') console.log(red(`    - ${type}  ${c.block.key}`) + dim(`   ${details(c.block)}`));
+            else {
+                const diffs = c.diffs.map((d) => `${d.name}: ${d.from} -> ${d.to}`).join('  ');
+                console.log(yellow(`    ~ ${type}  ${c.block.key}`) + `   ${diffs}`);
+            }
+        }
+    }
+
+    for (const d of result.duplicates) {
+        const what = `${d.block.type} ${d.block.key}`;
+        if (d.fixed) console.log(dim(`    duplicate removed: ${what} (had ${d.count} copies)`));
+        else {
+            const kind = d.identical ? 'identical copies' : 'copies with DIFFERENT values';
+            console.log(magenta(`    ! duplicate ${what}: ${d.count} ${kind}${d.existedBefore ? ', already there before this commit' : ', new in this commit'}`));
+        }
+    }
+    console.log('');
+}
+
+function main(argv) {
+    const args = { repo: process.cwd() };
+    const rest = [];
+    for (let i = 0; i < argv.length; i++) {
+        if (argv[i] === '--repo') args.repo = argv[++i];
+        else if (argv[i] === '-h' || argv[i] === '--help') args.help = true;
+        else rest.push(argv[i]);
+    }
+    if (args.help || rest.length !== 1) {
+        console.log('Usage: node profile-diff.js <commit> [--repo <path to git repo>]');
+        console.log('Shows the real changes to profiles and permission sets in a commit, ignoring blocks that only moved.');
+        return args.help ? 0 : 1;
+    }
+
+    const commit = tryGit(args.repo, ['rev-parse', '--verify', '--quiet', rest[0] + '^{commit}']);
+    if (!commit) {
+        console.error(`Commit not found: ${rest[0]} (in ${args.repo}). Run "git fetch" if it was made on GitHub or in Copado.`);
+        return 1;
+    }
+    const parent = tryGit(args.repo, ['rev-parse', '--verify', '--quiet', commit + '^1']) || git(args.repo, ['hash-object', '-t', 'tree', '--stdin'], '').trim();
+    const subject = git(args.repo, ['log', '-1', '--format=%s', commit]).trim();
+    const isMerge = !!tryGit(args.repo, ['rev-parse', '--verify', '--quiet', commit + '^2']);
+
+    console.log(bold(`Commit ${commit.slice(0, 10)}`) + `  ${subject}`);
+    console.log(dim(`Compared with ${isMerge ? 'first parent' : 'parent'} ${parent.slice(0, 10)}`) + '\n');
+
+    const files = changedPermissionFiles(args.repo, parent, commit);
+    if (!files.length) {
+        console.log('No profile or permission set files changed in this commit.');
+        return 0;
+    }
+
+    let total = 0;
+    for (const file of files) {
+        const before = file.status === 'A' ? null : git(args.repo, ['show', `${parent}:${file.oldPath}`]);
+        const after = file.status === 'D' ? null : git(args.repo, ['show', `${commit}:${file.newPath}`]);
+        const result = compareXml(before, after);
+        if (file.status !== 'A' && file.status !== 'D') total += result.changes.length;
+        printFile(file, lineStat(args.repo, parent, commit, file), result);
+    }
+    console.log(bold(`${files.length} file${files.length === 1 ? '' : 's'} checked, ${total} real change${total === 1 ? '' : 's'}.`));
+    return 0;
+}
+
+module.exports = { compareXml };
+
+if (require.main === module) {
+    try {
+        process.exitCode = main(process.argv.slice(2));
+    } catch (e) {
+        console.error((e.stderr && e.stderr.toString()) || e.message);
+        process.exitCode = 1;
+    }
+}
