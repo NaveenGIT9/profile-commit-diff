@@ -68,6 +68,16 @@ test('namespace and fullName lines are reported as formatting notes', () => {
     assert.deepStrictEqual(compareXml(before, before).notes, []);
 });
 
+test('broken XML is reported instead of compared', () => {
+    const before = profile(field('Account.A__c', false, true));
+    const after = before.replace('metadata">', 'metadata"');
+    const result = compareXml(before, after);
+    assert.strictEqual(result.changes.length, 0);
+    assert.strictEqual(result.invalid.before, null);
+    assert.strictEqual(result.invalid.after, 'line 2: <Profile> tag is missing its closing ">"');
+    assert.strictEqual(compareXml(before, before).invalid, undefined);
+});
+
 test('duplicates are flagged', () => {
     const before = profile(field('Account.A__c', false, true));
     const after = profile(

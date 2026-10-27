@@ -38,9 +38,12 @@ function decode(text) {
 }
 
 function parseXml(text) {
-    const doc = { name: '#document', children: [], text: '' };
+    const doc = { name: '#document', children: [], text: '', error: null };
     const stack = [doc];
     const token = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[([\s\S]*?)\]\]>|<(\/?)([^\s/>!?]+)([^>]*?)(\/?)>|([^<]+)/g;
+    const fail = (index, message) => {
+        if (!doc.error) doc.error = `line ${text.slice(0, index).split('\n').length}: ${message}`;
+    };
     let m;
     while ((m = token.exec(text))) {
         const top = stack[stack.length - 1];
@@ -48,8 +51,10 @@ function parseXml(text) {
             top.text += m[1];
         } else if (m[3]) {
             if (m[2]) {
+                if (top.name !== m[3]) fail(m.index, `</${m[3]}> does not match the open <${top.name}> tag`);
                 if (stack.length > 1) stack.pop();
             } else {
+                if (m[4].includes('<')) fail(m.index, `<${m[3]}> tag is missing its closing ">"`);
                 // Copado writes <tag xsi:nil="true"/>; it deploys as a blank value, so it is a change, shown as (empty).
                 const nil = /(^|\s)[\w.-]+:nil\s*=\s*["']true["']/.test(m[4]);
                 const node = { name: m[3], children: [], text: '', nil, attrs: m[4] };
@@ -60,6 +65,7 @@ function parseXml(text) {
             top.text += decode(m[6]);
         }
     }
+    if (stack.length > 1) fail(text.length, `<${stack[stack.length - 1].name}> is never closed`);
     return doc;
 }
 
@@ -162,6 +168,10 @@ function fieldDiffs(before, after) {
 }
 
 function compareXml(beforeXml, afterXml) {
+    // Broken XML would show as thousands of fake removals, so report the error instead of comparing.
+    const errorIn = (xml) => (xml == null ? null : parseXml(xml).error);
+    const invalid = { before: errorIn(beforeXml), after: errorIn(afterXml) };
+    if (invalid.before || invalid.after) return { invalid, changes: [], duplicates: [], notes: [], beforeCount: 0, afterCount: 0 };
     const beforeBlocks = readBlocks(beforeXml);
     const afterBlocks = readBlocks(afterXml);
     const repeatedTypes = repeated(afterBlocks, repeated(beforeBlocks, new Set()));
@@ -384,6 +394,14 @@ function countKinds(changes) {
 function printFile(file, stat, result) {
     say(heading(file.newPath) + (file.status === 'R' ? dim(`  (renamed from ${file.oldPath})`) : ''));
     const statText = dim(`git diff +${stat.added} -${stat.removed} lines`);
+    if (result.invalid) {
+        say(statText);
+        if (result.invalid.after) say(red(bold(`! Not valid XML after this commit (${result.invalid.after}). This file will fail to deploy.`)));
+        if (result.invalid.before) say(red(`! Not valid XML before this commit (${result.invalid.before}).`));
+        say(dim('Real changes can\'t be worked out until the XML is fixed.'));
+        say('');
+        return;
+    }
     if (file.status === 'A') say(`${statText}  ->  ${green('new file')} with ${result.afterCount} blocks`);
     else if (file.status === 'D') say(`${statText}  ->  ${red('file deleted')} (${result.beforeCount} blocks)`);
     else if (!result.changes.length) say(`${statText}  ->  ${green('no real changes (only re-ordered)')}`);
