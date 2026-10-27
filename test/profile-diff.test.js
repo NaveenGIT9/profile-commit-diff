@@ -56,6 +56,18 @@ test('nil elements are shown as (empty); fullName is ignored', () => {
     assert.deepStrictEqual(changes[2].diffs, [{ name: 'value', from: 'Salesforce', to: '(empty)' }]);
 });
 
+test('namespace and fullName lines are reported as formatting notes', () => {
+    const before = `<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n    <fullName>Admin</fullName>\n${field('Account.A__c', false, true)}\n</Profile>`;
+    const after = `<Profile xmlns="http://soap.sforce.com/2006/04/metadata"\n      xmlns:n1="http://www.w3.org/2001/XMLSchema-instance">\n${field('Account.A__c', false, true)}\n</Profile>`;
+    const result = compareXml(before, after);
+    assert.strictEqual(result.changes.length, 0);
+    assert.deepStrictEqual(result.notes, [
+        'xmlns:n1="http://www.w3.org/2001/XMLSchema-instance" namespace declaration added',
+        '<fullName>Admin</fullName> line removed'
+    ]);
+    assert.deepStrictEqual(compareXml(before, before).notes, []);
+});
+
 test('duplicates are flagged', () => {
     const before = profile(field('Account.A__c', false, true));
     const after = profile(

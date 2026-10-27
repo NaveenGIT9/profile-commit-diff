@@ -52,7 +52,7 @@ function parseXml(text) {
             } else {
                 // Copado writes <tag xsi:nil="true"/>; it deploys as a blank value, so it is a change, shown as (empty).
                 const nil = /(^|\s)[\w.-]+:nil\s*=\s*["']true["']/.test(m[4]);
-                const node = { name: m[3], children: [], text: '', nil };
+                const node = { name: m[3], children: [], text: '', nil, attrs: m[4] };
                 top.children.push(node);
                 if (!m[5]) stack.push(node);
             }
@@ -74,6 +74,30 @@ function canonical(node) {
 
 // fullName is ignored: Salesforce takes the name from the file name, and Copado often drops the line.
 const IGNORED = new Set(['fullName']);
+
+function namespaces(root) {
+    const found = new Map();
+    for (const m of (root?.attrs || '').matchAll(/xmlns(?::([\w.-]+))?\s*=\s*["']([^"']*)["']/g)) found.set(m[1] ? `xmlns:${m[1]}` : 'xmlns', m[2]);
+    return found;
+}
+
+// Lines git shows that don't change anything in the org: namespace declarations and fullName.
+function formattingNotes(beforeXml, afterXml) {
+    if (beforeXml == null || afterXml == null) return [];
+    const [before, after] = [beforeXml, afterXml].map((xml) => parseXml(xml).children[0]);
+    const notes = [];
+    const [nsBefore, nsAfter] = [namespaces(before), namespaces(after)];
+    for (const [name, uri] of nsAfter) if (nsBefore.get(name) !== uri) notes.push(`${name}="${uri}" namespace declaration added`);
+    for (const [name, uri] of nsBefore) if (!nsAfter.has(name)) notes.push(`${name}="${uri}" namespace declaration removed`);
+    const fullName = (root) => root?.children.find((c) => c.name === 'fullName')?.text.trim();
+    const [fnBefore, fnAfter] = [fullName(before), fullName(after)];
+    if (fnBefore !== fnAfter) {
+        if (fnBefore && !fnAfter) notes.push(`<fullName>${fnBefore}</fullName> line removed`);
+        else if (!fnBefore) notes.push(`<fullName>${fnAfter}</fullName> line added`);
+        else notes.push(`fullName changed: ${fnBefore} -> ${fnAfter}`);
+    }
+    return notes;
+}
 
 function readBlocks(xml) {
     if (xml == null) return [];
@@ -171,7 +195,7 @@ function compareXml(beforeXml, afterXml) {
         if (list.length > 1 && (after.get(id) || []).length < 2) duplicates.push({ block: list[0], count: list.length, fixed: true });
     }
 
-    return { changes, duplicates, beforeCount: beforeBlocks.length, afterCount: afterBlocks.length };
+    return { changes, duplicates, notes: formattingNotes(beforeXml, afterXml), beforeCount: beforeBlocks.length, afterCount: afterBlocks.length };
 }
 
 // ---------- git ----------
@@ -382,6 +406,7 @@ function printFile(file, stat, result) {
         say(renderTable([{ title: 'Type' }, { title: 'Component' }, { title: 'Copies' }, { title: 'Values' }, { title: 'Introduced in' }], rows));
     }
     for (const d of fixed) say(dim(`Duplicate removed: ${label(d.block.type)} ${component(d.block)} (had ${d.count} copies)`));
+    for (const note of result.notes) say(dim(`Formatting only, no effect on deploy: ${note}`));
     say('');
 }
 

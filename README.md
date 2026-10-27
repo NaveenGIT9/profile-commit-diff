@@ -89,7 +89,10 @@ A file that was only re-ordered shows `no real changes (only re-ordered)`. A new
 
 `<tag n1:nil="true" />` (how Copado writes an empty value) is shown as `(empty)`, for example `+ description (empty)`, because it deploys as a blank value.
 
-`fullName` is ignored, since Salesforce takes the name from the file name.
+Lines git shows that don't change anything in the org are listed under the table as `Formatting only, no effect on deploy`, not as changes:
+
+- namespace declarations added to or removed from the root tag, e.g. `xmlns:n1="http://www.w3.org/2001/XMLSchema-instance"` (it only declares the `n1:` prefix used by `n1:nil`)
+- the `<fullName>` line added or removed (Salesforce takes the name from the file name)
 
 ## Tests
 
